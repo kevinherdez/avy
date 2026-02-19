@@ -23,7 +23,6 @@ export const useAllMapLayers = (): UseQueryResult<MapLayer, AxiosError | ZodErro
     queryKey: key,
     queryFn: async (): Promise<MapLayer> => fetchAllMapLayers(nationalAvalancheCenterHost, thisLogger),
     enabled: true,
-    cacheTime: Infinity, // hold on to this cached data forever
   });
 };
 
@@ -67,7 +66,25 @@ const fetchAllMapLayers = async (nationalAvalancheCenterHost: string, logger: Lo
     });
     throw parseResult.error;
   } else {
-    return parseResult.data;
+    // This is temporary until we can get 1 call that includes CBAC
+    const urlCBAC = `${nationalAvalancheCenterHost}/v2/public/products/map-layer/CBAC`;
+    const cbacData = await safeFetch(() => axios.get<AxiosResponse<unknown>>(urlCBAC), thisLogger, what);
+    const cbacResult = mapLayerSchema.safeParse(cbacData);
+    if (!cbacResult.success) {
+      thisLogger.warn({error: cbacResult.error}, 'failed to parse');
+      Sentry.captureException(cbacResult.error, {
+        tags: {
+          zod_error: true,
+          url,
+        },
+      });
+      throw cbacResult.error;
+    } else {
+      // CAIC and CBAC overlap on the map. We need to remove CAIC in favor of CBAC since CAIC is unsupported in the app
+      const adjustedFeatures = parseResult.data.features.filter(feature => feature.properties.center_id !== 'CAIC').concat(cbacResult.data.features);
+      parseResult.data.features = adjustedFeatures;
+      return parseResult.data;
+    }
   }
 };
 
